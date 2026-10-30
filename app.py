@@ -47,26 +47,29 @@ def make_driver():
 
 
 def find_first_result(driver, keyword):
+    """Search ProPakistani and return the first result that matches the keyword."""
     driver.get(f"{BASE_URL}/?s={quote_plus(keyword)}")
 
-    def article_links(d):
-        links = []
+    def collect(d):
+        found, seen = [], set()
         for a in d.find_elements(By.CSS_SELECTOR, "a[href]"):
             href = (a.get_attribute("href") or "").strip()
-            if ARTICLE_RE.match(href) and href not in links:
-                links.append(href)
-        return links or False
+            if ARTICLE_RE.match(href) and href not in seen:
+                seen.add(href)
+                found.append((href, (a.get_attribute("textContent") or "").strip()))
+        return found or False
 
     try:
-        links = WebDriverWait(driver, 25).until(article_links)
+        links = WebDriverWait(driver, 25).until(collect)
     except Exception:
         return None
-    for selector in ("main a[href]", "#content a[href]", "article a[href]"):
-        for a in driver.find_elements(By.CSS_SELECTOR, selector):
-            href = (a.get_attribute("href") or "").strip()
-            if ARTICLE_RE.match(href):
-                return href
-    return links[0]
+
+    terms = re.findall(r"[a-z0-9]+", keyword.lower()) or [keyword.lower()]
+    for href, text in links:
+        hay = (href.replace("-", " ") + " " + text).lower()
+        if any(re.search(r"\b" + re.escape(t) + r"\b", hay) for t in terms):
+            return href
+    return links[0][0]
 
 
 def scrape_article(driver, url):
