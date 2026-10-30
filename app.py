@@ -7,7 +7,11 @@ News source  : ProPakistani   (064 % 20 + 1 = 5)
 import os
 import re
 from collections import Counter
-from urllib.parse import quote_plus
+import base64
+import time
+import base64
+import time
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote, urlparse, parse_qs, unquote
 
 from flask import Flask, jsonify, request
 from selenium import webdriver
@@ -46,30 +50,101 @@ def make_driver():
     return driver
 
 
-def find_first_result(driver, keyword):
-    """Search ProPakistani and return the first result that matches the keyword."""
-    driver.get(f"{BASE_URL}/?s={quote_plus(keyword)}")
-
-    def collect(d):
-        found, seen = [], set()
-        for a in d.find_elements(By.CSS_SELECTOR, "a[href]"):
-            href = (a.get_attribute("href") or "").strip()
-            if ARTICLE_RE.match(href) and href not in seen:
-                seen.add(href)
-                found.append((href, (a.get_attribute("textContent") or "").strip()))
-        return found or False
-
+def _real_url(href):
+    """Unwrap DuckDuckGo / Bing redirect links to the real article URL."""
     try:
-        links = WebDriverWait(driver, 25).until(collect)
+        if "uddg=" in href:
+            return unquote(parse_qs(urlparse(href).query).get("uddg", [""])[0])
+        if "bing.com/ck/a" in href:
+            u = parse_qs(urlparse(href).query).get("u", [""])[0]
+            if u.startswith("a1"):
+                b = u[2:]
+                return base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode()
+    except Exception:
+        pass
+    return href
+
+
+def _collect_links(driver):
+    found, seen = [], set()
+    for a in driver.find_elements(By.CSS_SELECTOR, "a[href]"):
+        href = _real_url((a.get_attribute("href") or "").strip()).split("#")[0]
+        if ARTICLE_RE.match(href) and href not in seen:
+            seen.add(href)
+            found.append((href, (a.get_attribute("textContent") or "").strip()))
+    return found
+
+
+def _matches(href, text, keyword):
+    terms = re.findall(r"[a-z0-9]+", keyword.lower()) or [keyword.lower()]
+    hay = (href.replace("-", " ") + " " + text).lower()
+    return any(re.search(r"\b" + re.escape(t) + r"\b", hay) for t in terms)
+
+
+def _real_url(href):
+    """Unwrap DuckDuckGo / Bing redirect links to the real article URL."""
+    try:
+        if "uddg=" in href:
+            return unquote(parse_qs(urlparse(href).query).get("uddg", [""])[0])
+        if "bing.com/ck/a" in href:
+            u = parse_qs(urlparse(href).query).get("u", [""])[0]
+            if u.startswith("a1"):
+                b = u[2:]
+                return base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode()
+    except Exception:
+        pass
+    return href
+
+
+def _collect_links(driver):
+    found, seen = [], set()
+    for a in driver.find_elements(By.CSS_SELECTOR, "a[href]"):
+        href = _real_url((a.get_attribute("href") or "").strip()).split("#")[0]
+        if ARTICLE_RE.match(href) and href not in seen:
+            seen.add(href)
+            found.append((href, (a.get_attribute("textContent") or "").strip()))
+    return found
+
+
+def _matches(href, text, keyword):
+    terms = re.findall(r"[a-z0-9]+", keyword.lower()) or [keyword.lower()]
+    hay = (href.replace("-", " ") + " " + text).lower()
+    return any(re.search(r"\b" + re.escape(t) + r"\b", hay) for t in terms)
+
+
+def find_first_result(driver, keyword):
+    """Search the web for ProPakistani articles on the keyword and return the first result."""
+    kw = quote_plus(keyword)
+    slug = re.sub(r"[^a-z0-9]+", "-", keyword.lower()).strip("-")
+    searches = [
+        f"https://html.duckduckgo.com/html/?q=site%3Apropakistani.pk+{kw}",
+        f"https://www.bing.com/search?q=site%3Apropakistani.pk+{kw}",
+        f"{BASE_URL}/tag/{slug}/",
+    ]
+    fallback = None
+    for url in searches:
+        try:
+            driver.get(url)
+            time.sleep(3)
+            if "not found" in (driver.title or "").lower():
+                continue
+            links = _collect_links(driver)
+        except Exception:
+            continue
+        for href, text in links:
+            if _matches(href, text, keyword):
+                return href
+        if links and fallback is None and "/tag/" in url:
+            fallback = links[0][0]
+    if fallback:
+        return fallback
+    try:
+        driver.get(BASE_URL)
+        time.sleep(3)
+        links = _collect_links(driver)
+        return links[0][0] if links else None
     except Exception:
         return None
-
-    terms = re.findall(r"[a-z0-9]+", keyword.lower()) or [keyword.lower()]
-    for href, text in links:
-        hay = (href.replace("-", " ") + " " + text).lower()
-        if any(re.search(r"\b" + re.escape(t) + r"\b", hay) for t in terms):
-            return href
-    return links[0][0]
 
 
 def scrape_article(driver, url):
